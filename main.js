@@ -186,11 +186,12 @@ app.post("/updatepassword", verifyToken, async (req, res) => {
 
 
 
+
 // Admin routes
 
 app.get("/getallproducts", (req, res) => {
     const page = parseInt(req.query.page) || 1;
-    const limit = 5;
+    const limit = 10;
     const category = req.query.category || "all";
     const search = req.query.search || "";
     const offset = (page - 1) * limit;
@@ -236,55 +237,74 @@ app.get("/getallproducts", (req, res) => {
 });
 
 
-app.get("/getallcategories", async (req, res) => {
-    const getdata = "SELECT * FROM categories";
+app.get("/getallcategories", (req, res) => {
+    // 1. Extract params
+    const search = req.query.search || "";
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const offset = (page - 1) * limit;
 
-    db.query(getdata, async (err, result) => {
+    // 2. Query with search and pagination
+    const getdata = `
+        SELECT * FROM categories 
+        WHERE category_name LIKE ? 
+        ORDER BY category_id DESC 
+        LIMIT ? OFFSET ?
+    `;
+
+    const searchVal = `%${search}%`;
+
+    db.query(getdata, [searchVal, limit, offset], (err, result) => {
         if (err) {
             return res.send({ message: "Database error" });
         }
 
         if (result.length === 0) {
-            return res.send({ message: "No Categories Available" });
+            return res.send({ message: "No Categories Available", data: [] });
         }
 
-        try {
-            // console.log(result);
-            return res.send({
-                message: "Success",
-                data: result
-            });
-
-        } catch (hashError) {
-            return res.send({ message: "Error Fetching Categories" });
-        }
+        return res.send({
+            message: "Success",
+            data: result
+        });
     });
 });
+
 
 app.get("/getallbrands", async (req, res) => {
-    const getdata = "SELECT * FROM brands";
+    // 1. Get params from request
+    const search = req.query.search || "";
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const offset = (page - 1) * limit;
 
-    db.query(getdata, async (err, result) => {
+    // 2. SQL query with Search and Pagination
+    const getdata = `
+        SELECT * FROM brands 
+        WHERE brand_name LIKE ? 
+        ORDER BY brand_id DESC 
+        LIMIT ? OFFSET ?
+    `;
+
+    const searchVal = `%${search}%`;
+
+    db.query(getdata, [searchVal, limit, offset], (err, result) => {
         if (err) {
-            return res.send({ message: "Database error" });
+            return res.status(500).send({ message: "Database error" });
         }
 
         if (result.length === 0) {
-            return res.send({ message: "No Brands Available" });
+            // Send empty data array instead of error so frontend map doesn't crash
+            return res.send({ message: "No Brands Available", data: [] });
         }
 
-        try {
-            // console.log(result);
-            return res.send({
-                message: "Success",
-                data: result
-            });
-
-        } catch (hashError) {
-            return res.send({ message: "Error Fetching Brands" });
-        }
+        return res.send({
+            message: "Success",
+            data: result
+        });
     });
 });
+
 
 app.get("/deleteproduct/:id", async (req, res) => {
     const id = req.params.id
@@ -553,6 +573,207 @@ app.get("/getuserprofile/:id", async (req, res) => {
         }
     });
 });
+
+app.post("/updateprofile", upload.single("image"), (req, res) => {
+
+    const { user_id, name, email, mobilenumber, address } = req.body;
+
+
+    let image = req.file ? req.file.filename : null;
+
+    if (image) {
+
+        const sql = `
+        UPDATE users 
+        SET name=?, email=?, mobilenumber=?, address=?, profileimage=? 
+        WHERE user_id=?`;
+
+        db.query(sql,
+            [name, email, mobilenumber, address, image, user_id],
+            (err, result) => {
+
+                if (err) return res.send(err);
+
+                res.send({ message: "Profile Updated With Image" });
+            });
+
+    } else {
+
+        const sql = `
+        UPDATE users 
+        SET name=?, email=?, mobilenumber=?, address=? 
+        WHERE user_id=?`;
+
+        db.query(sql,
+            [name, email, mobilenumber, address, user_id],
+            (err, result) => {
+
+                if (err) return res.send(err);
+
+                res.send({ message: "Profile Updated" });
+            });
+
+    }
+
+});
+
+app.post('/addbrand', (req, res) => {
+    const { brand_name } = req.body;
+
+    if (!brand_name) {
+        return res.json({ message: "Brand name is required" });
+    }
+
+    const sql = "INSERT INTO brands (brand_name) VALUES (?)";
+    db.query(sql, [brand_name], (err, result) => {
+        if (err) {
+            // console.error(err);
+            if (err.code === 'ER_DUP_ENTRY') {
+                return res.json({ message: "Brand already exists" });
+            }
+            return res.status(500).json({ message: "Database error" });
+        }
+        res.json({
+            message: "Brand created",
+            brandId: result.insertId
+        });
+    });
+});
+
+
+app.post('/addcategory', upload.single('category_image'), (req, res) => {
+    const { category_name } = req.body;
+    const category_image = req.file ? req.file.filename : null;
+    console.log(category_image);
+    console.log(category_name);
+
+
+    if (!category_name || !category_image) {
+        return res.json({ message: "All fields are required" });
+    }
+
+    const sql = "INSERT INTO categories (category_name, category_image) VALUES (?, ?)";
+    db.query(sql, [category_name, category_image], (err, result) => {
+        if (err) {
+            return res.json({ message: "Category Already Exists" });
+        }
+        res.json({ message: "Category Created" });
+    });
+});
+
+
+app.delete("/deletebrand/:id", (req, res) => {
+    const { id } = req.params;
+
+    // Check if brand is linked to products first (Optional but safe)
+    const checkSql = "SELECT * FROM products WHERE brand_id = ?";
+    db.query(checkSql, [id], (err, results) => {
+        if (results.length > 0) {
+            return res.json({
+                message: "Cannot delete! Brand is currently linked to products."
+            });
+        }
+
+        // If not linked, proceed with deletion
+        const sql = "DELETE FROM brands WHERE brand_id = ?";
+        db.query(sql, [id], (err, result) => {
+            if (err) {
+                return res.json({ message: "Database error" });
+            }
+            res.json({ message: "Brand Deleted Successfully" });
+        });
+    });
+});
+
+app.post("/updatebrand", (req, res) => {
+    const { brand_name, brand_id } = req.body;
+
+    if (!brand_name || !brand_id) {
+        return res.send({ message: "Brand name and ID are required" });
+    }
+
+    const sql = "UPDATE brands SET brand_name = ? WHERE brand_id = ?";
+
+    db.query(sql, [brand_name, brand_id], (err, result) => {
+        if (err) {
+            console.error(err);
+            return res.send({ message: "Database error" });
+        }
+
+        if (result.affectedRows === 0) {
+            return res.send({ message: "Brand not found" });
+        }
+
+        res.send({ message: "Brand Updated Successfully" });
+    });
+});
+
+app.delete("/deletecategory/:id", (req, res) => {
+    const { id } = req.params;
+
+    // Optional: Check if category has products before deleting
+    const checkSql = "SELECT * FROM products WHERE category_id = ?";
+    db.query(checkSql, [id], (err, results) => {
+        if (results.length > 0) {
+            return res.json({ message: "Category is in use by products!" });
+        }
+
+        const sql = "DELETE FROM categories WHERE category_id = ?";
+        db.query(sql, [id], (err, result) => {
+            if (err) return res.status(500).json(err);
+            res.json({ message: "Deleted Successfully" });
+        });
+    });
+});
+
+app.post('/updatecategory', upload.single('category_image'), (req, res) => {
+    const { category_id, category_name } = req.body;
+    const new_image = req.file ? req.file.filename : null;
+
+    if (new_image) {
+        // Update both name and image
+        const sql = "UPDATE categories SET category_name = ?, category_image = ? WHERE category_id = ?";
+        db.query(sql, [category_name, new_image, category_id], (err, result) => {
+            if (err) return res.json({ message: "Update Error" });
+            res.json({ message: "Category Updated" });
+        });
+    } else {
+        // Update only name
+        const sql = "UPDATE categories SET category_name = ? WHERE category_id = ?";
+        db.query(sql, [category_name, category_id], (err, result) => {
+            if (err) return res.json({ message: "Update Error" });
+            res.json({ message: "Category Updated" });
+        });
+    }
+});
+
+app.get("/getadmindashboarddata", (req, res) => {
+    const sql = `
+        SELECT 
+            (SELECT COUNT(*) FROM users) as customers,
+            (SELECT COUNT(*) FROM products) as products,
+            (SELECT COUNT(*) FROM users WHERE status = 'active') as activeCustomers,
+            (SELECT COUNT(*) FROM users WHERE status = 'blocked') as blockedCustomers,
+            (SELECT COUNT(*) FROM products WHERE status = 'active') as active,
+            (SELECT COUNT(*) FROM products WHERE status = 'inactive') as inactive,
+            (SELECT COUNT(*) FROM brands) as brands,
+            (SELECT COUNT(*) FROM categories) as categories
+    `;
+
+    db.query(sql, (err, result) => {
+        if (err) {
+            return res.status(500).json({ success: false, message: "Database Error" });
+        }
+        // Result[0] contains all counts as properties
+        res.json({ success: true, data: result[0] });
+    });
+});
+
+
+
+
+
+
 
 
 
