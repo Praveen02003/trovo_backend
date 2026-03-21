@@ -11,21 +11,39 @@ const app = express();
 app.use(express.json()); // important
 app.use(cors());
 
-const db = mysql.createConnection({
+process.on("uncaughtException", (err) => {
+    console.error("Uncaught Exception:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+    console.error("Unhandled Rejection:", err);
+});
+
+const db = mysql.createPool({
     host: "localhost",
     user: "root",
     password: "",
-    database: "trovo"
+    database: "trovo",
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    connectTimeout: 10000
 });
 
-db.connect((err) => {
+// Log connection once
+db.getConnection((err, connection) => {
     if (err) {
-        console.log("Database connection failed", err);
-    } else {
-        console.log("MySQL Connected");
+        console.error("DB Connection Failed:", err);
+        return;
     }
+    console.log("MySQL Connected");
+    connection.release();
 });
 
+// Handle pool errors
+db.on("error", (err) => {
+    console.error("MySQL Pool Error:", err);
+});
 
 var secretkey = '1234567890';
 
@@ -768,6 +786,161 @@ app.get("/getadmindashboarddata", (req, res) => {
         res.json({ success: true, data: result[0] });
     });
 });
+
+
+app.get("/fewproducts", (req, res) => {
+    db.query("SELECT * FROM products ORDER BY product_id DESC LIMIT 4", (err, result) => {
+        if (err) return res.status(500).json({ message: "DB error" });
+        res.json({ data: result });
+    });
+});
+
+
+app.get('/getparticularproduct/:id', (req, res) => {
+    const productId = req.params.id; // Extract ID from the URL
+    const sql = `SELECT * FROM products 
+    INNER JOIN categories on categories.category_id = products.category_id  
+    INNER JOIN brands on brands.brand_id = products.brand_id 
+    WHERE product_id = ?`;
+
+    db.query(sql, [productId], (err, result) => {
+        if (err) {
+            return res.json({ message: err.message });
+        }
+
+        // Check if product exists
+        if (result.length === 0) {
+            return res.json({ message: "Product not found" });
+        }
+
+        // Return only the single object instead of an array
+        res.json({ data: result[0] });
+    });
+});
+
+
+app.post("/addtowishlist", (req, res) => {
+    const { userid, productid } = req.body;
+
+    if (!userid || !productid) {
+        return res.status(400).json({ message: "Invalid data" });
+    }
+
+    db.query(
+        "INSERT INTO wishlist (user_id, product_id) VALUES (?, ?)",
+        [userid, productid],
+        (err) => {
+            if (err) {
+                console.error(err);
+
+                if (err.code === "ER_DUP_ENTRY") {
+                    return res.json({ message: "Already in wishlist" });
+                }
+
+                return res.status(500).json({ message: "Database error" });
+            }
+
+            res.json({ message: "Added to wishlist" });
+        }
+    );
+});
+
+app.post("/removefromwishlist", (req, res) => {
+    const { userid, productid } = req.body;
+
+    if (!userid || !productid) {
+        return res.status(400).json({ message: "Invalid data" });
+    }
+
+    db.query(
+        "DELETE FROM wishlist WHERE user_id = ? AND product_id = ?",
+        [userid, productid],
+        (err) => {
+            if (err) {
+                console.error(err);
+                return res.status(500).json({ message: "Database error" });
+            }
+
+            res.json({ message: "Removed from wishlist" });
+        }
+    );
+});
+
+app.get("/getwishlistdata/:id", (req, res) => {
+    const id = req.params.id;
+    const sql = `SELECT * FROM wishlist 
+    INNER JOIN users ON users.user_id = wishlist.user_id
+    INNER JOIN products ON products.product_id = wishlist.product_id 
+    INNER JOIN categories ON categories.category_id = products.category_id 
+    INNER JOIN brands ON brands.brand_id = products.brand_id 
+    WHERE wishlist.user_id = ? `
+
+    db.query(
+        sql,
+        [id],
+        (err, result) => {
+            if (err) return res.status(500).json({ message: "DB error" });
+
+            res.json({ data: result });
+        }
+    );
+});
+
+
+
+app.get('/getallactiveproducts', (req, res) => {
+    const { category, search } = req.query;
+
+    let sql = `SELECT * FROM products 
+               INNER JOIN categories ON categories.category_id = products.category_id  
+               INNER JOIN brands ON brands.brand_id = products.brand_id 
+               WHERE products.status = 'active'`;
+
+    let queryParams = [];
+
+    // Category Filter
+    if (category && category !== "All") {
+        sql += ` AND categories.category_name = ?`;
+        queryParams.push(category);
+    }
+
+    // Search Filter
+    if (search) {
+        sql += ` AND (products.product_name LIKE ? OR brands.brand_name LIKE ?)`;
+        const searchTerm = `%${search}%`;
+        queryParams.push(searchTerm, searchTerm);
+    }
+
+    db.query(sql, queryParams, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ data: results });
+    });
+});
+
+
+
+
+app.get("/getcategories", (req, res) => {
+    const getdata = `SELECT * FROM categories `;
+
+
+    db.query(getdata, (err, result) => {
+        if (err) {
+            return res.send({ message: "Database error" });
+        }
+
+        if (result.length === 0) {
+            return res.send({ message: "No Categories Available", data: [] });
+        }
+
+        return res.send({
+            message: "Success",
+            data: result
+        });
+    });
+});
+
+
 
 
 
