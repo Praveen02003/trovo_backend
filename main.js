@@ -766,7 +766,8 @@ app.post('/updatecategory', upload.single('category_image'), (req, res) => {
 });
 
 app.get("/getadmindashboarddata", (req, res) => {
-    const sql = `
+    // Query 1: All Dashboard Stats
+    const statsSql = `
         SELECT 
             (SELECT COUNT(*) FROM users) as customers,
             (SELECT COUNT(*) FROM products) as products,
@@ -775,17 +776,35 @@ app.get("/getadmindashboarddata", (req, res) => {
             (SELECT COUNT(*) FROM products WHERE status = 'active') as active,
             (SELECT COUNT(*) FROM products WHERE status = 'inactive') as inactive,
             (SELECT COUNT(*) FROM brands) as brands,
-            (SELECT COUNT(*) FROM categories) as categories
+            (SELECT COUNT(*) FROM categories) as categories,
+            (SELECT COUNT(*) FROM orders) as orders,
+            (SELECT IFNULL(SUM(total_amount), 0) FROM orders) as totalRevenue
     `;
 
-    db.query(sql, (err, result) => {
-        if (err) {
-            return res.status(500).json({ success: false, message: "Database Error" });
-        }
-        // Result[0] contains all counts as properties
-        res.json({ success: true, data: result[0] });
+    // Query 2: Last 5 Transactions
+    const transactionsSql = `
+        SELECT * 
+        FROM orders
+        JOIN users ON orders.user_id = users.user_id
+        ORDER BY orders.created_at DESC 
+        LIMIT 5
+    `;
+
+
+    db.query(statsSql, (err, statsResult) => {
+        if (err) return res.status(500).json({ success: false, message: "Stats Error" });
+
+        db.query(transactionsSql, (err, transResult) => {
+            if (err) return res.status(500).json({ success: false, message: "Transaction Error" });
+            res.json({
+                success: true,
+                data: statsResult[0],
+                recentTransactions: transResult
+            });
+        });
     });
 });
+
 
 
 app.get("/fewproducts", (req, res) => {
@@ -886,8 +905,6 @@ app.get("/getwishlistdata/:id", (req, res) => {
     );
 });
 
-
-
 app.get('/getallactiveproducts', (req, res) => {
     const { category, search } = req.query;
 
@@ -917,9 +934,6 @@ app.get('/getallactiveproducts', (req, res) => {
     });
 });
 
-
-
-
 app.get("/getcategories", (req, res) => {
     const getdata = `SELECT * FROM categories `;
 
@@ -940,6 +954,282 @@ app.get("/getcategories", (req, res) => {
     });
 });
 
+app.post("/addtocart", (req, res) => {
+    const { userid, productid, quantity } = req.body;
+
+    if (!userid || !productid) {
+        return res.status(400).json({ message: "Invalid data" });
+    }
+
+    const qty = quantity || 1;
+
+    // ✅ CHECK IF PRODUCT ALREADY EXISTS
+    const checkSql = "SELECT * FROM cart WHERE user_id = ? AND product_id = ?";
+
+    db.query(checkSql, [userid, productid], (err, result) => {
+        if (err) return res.status(500).json({ message: "DB error" });
+
+        if (result.length > 0) {
+            // ✅ UPDATE QUANTITY
+            const updateSql = `
+                UPDATE cart 
+                SET quantity = quantity + ? 
+                WHERE user_id = ? AND product_id = ?
+            `;
+
+            db.query(updateSql, [qty, userid, productid], (err) => {
+                if (err) return res.status(500).json({ message: "Update error" });
+
+                return res.json({ message: "Quantity updated" });
+            });
+
+        } else {
+            // ✅ INSERT NEW ITEM
+            const insertSql = `
+                INSERT INTO cart (user_id, product_id, quantity) 
+                VALUES (?, ?, ?)
+            `;
+
+            db.query(insertSql, [userid, productid, qty], (err) => {
+                if (err) return res.status(500).json({ message: "Insert error" });
+
+                return res.json({ message: "Added to cart" });
+            });
+        }
+    });
+});
+app.post("/removefromcart", (req, res) => {
+    const { userid, productid } = req.body;
+
+    if (!userid || !productid) {
+        return res.status(400).json({ message: "Invalid data" });
+    }
+
+    const sql = "DELETE FROM cart WHERE user_id = ? AND product_id = ?";
+
+    db.query(
+        sql,
+        [userid, productid],
+        (err, result) => {
+            if (err) {
+                console.error(err);
+                return res.status(500).json({ message: "Database error" });
+            }
+
+            // Optional: Check if anything was actually deleted
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ message: "Item not found in cart" });
+            }
+
+            res.json({ message: "Removed from cart" });
+        }
+    );
+});
+
+
+app.get("/getcartdata/:id", (req, res) => {
+    const id = req.params.id;
+    // Joining cart with users, products, categories, and brands to get full details
+    const sql = `SELECT * FROM cart 
+    INNER JOIN users ON users.user_id = cart.user_id
+    INNER JOIN products ON products.product_id = cart.product_id 
+    INNER JOIN categories ON categories.category_id = products.category_id 
+    INNER JOIN brands ON brands.brand_id = products.brand_id 
+    WHERE cart.user_id = ?`;
+
+    db.query(
+        sql,
+        [id],
+        (err, result) => {
+            if (err) {
+                console.error(err);
+                return res.status(500).json({ message: "DB error" });
+            }
+
+            // Returns data as res.data.data for your frontend logic
+            res.json({ data: result });
+        }
+    );
+});
+
+app.post('/updatecartquantity', (req, res) => {
+    const { userid, productid, quantity } = req.body;
+
+    const sql = `
+        UPDATE cart 
+        SET quantity = ? 
+        WHERE user_id = ? AND product_id = ?
+    `;
+
+    db.query(sql, [quantity, userid, productid], (err, result) => {
+        if (err) {
+            return res.status(500).json({ message: "Error updating quantity" });
+        }
+
+        return res.json({ message: "Quantity updated" });
+    });
+});
+
+
+app.post("/createorder", (req, res) => {
+
+    const { user_id } = req.body;
+
+    // 1️⃣ Get cart items
+    const cartSql = `
+        SELECT c.product_id, c.quantity, p.price
+        FROM cart c
+        JOIN products p ON c.product_id = p.product_id
+        WHERE c.user_id = ?
+    `;
+
+    db.query(cartSql, [user_id], (err, cartItems) => {
+
+        if (err) return res.status(500).json({ message: "DB error" });
+
+        if (cartItems.length === 0) {
+            return res.json({ message: "Cart empty" });
+        }
+
+        // 2️⃣ CALCULATE VALUES
+        let subtotal = 0;
+
+        cartItems.forEach(item => {
+            subtotal += item.price * item.quantity;
+        });
+
+        const tax = subtotal * 0.03; // 3%
+        const total = subtotal + tax;
+
+        // 3️⃣ INSERT ORDER
+        const orderSql = `
+            INSERT INTO orders (user_id, subtotal, tax, total_amount, order_status)
+            VALUES (?, ?, ?, ?, 'Placed')
+        `;
+
+        db.query(orderSql, [user_id, subtotal, tax, total], (err, result) => {
+
+            if (err) return res.status(500).json({ message: "Order error" });
+
+            const orderId = result.insertId;
+
+            // 4️⃣ INSERT ORDER ITEMS
+            const itemsSql = `
+                INSERT INTO order_items (order_id, user_id, product_id, quantity, price)
+                VALUES ?
+            `;
+
+            const values = cartItems.map(item => [
+                orderId,
+                user_id,
+                item.product_id,
+                item.quantity,
+                item.price
+            ]);
+
+            db.query(itemsSql, [values], (err) => {
+
+                if (err) return res.status(500).json({ message: "Items error" });
+
+                // 5️⃣ CLEAR CART
+                db.query("DELETE FROM cart WHERE user_id = ?", [user_id]);
+
+                res.json({
+                    message: "Order placed successfully",
+                    order_id: orderId
+                });
+
+            });
+
+        });
+
+    });
+
+});
+
+app.get("/getorders/:user_id", (req, res) => {
+
+    const { user_id } = req.params;
+
+    const sql = `
+        SELECT 
+            orders.*,
+            order_items.*,
+            products.product_name,
+            products.image,
+            products.status AS product_status
+        FROM orders 
+        INNER JOIN order_items 
+            ON orders.order_id = order_items.order_id
+        INNER JOIN products 
+            ON products.product_id = order_items.product_id
+        WHERE orders.user_id = ?
+        ORDER BY orders.order_id DESC
+    `;
+
+    db.query(sql, [user_id], (err, results) => {
+        if (err) {
+            return res.status(500).json({ message: "DB error" });
+        }
+
+        res.json(results);
+    });
+});
+
+app.get("/getorder/:order_id", (req, res) => {
+
+    const { order_id } = req.params;
+
+
+    const sql = `
+        SELECT *
+        FROM orders
+        INNER JOIN order_items 
+            ON orders.order_id = order_items.order_id
+        INNER JOIN products 
+            ON products.product_id = order_items.product_id
+        WHERE orders.order_id = ?
+    `;
+
+    db.query(sql, [order_id], (err, results) => {
+
+        if (err) return res.status(500).json({ message: "DB error" });
+
+
+        res.json(results);
+    });
+});
+
+
+app.get('/getallorders', (req, res) => {
+    // orders.* gets everything from the order
+    // users.name AS customer_name gives you a clear key for the UI
+    const query = `
+        SELECT orders.*, users.name AS customer_name 
+        FROM orders
+        JOIN users ON orders.user_id = users.user_id
+        ORDER BY orders.created_at DESC
+    `;
+
+    db.query(query, (err, results) => {
+        if (err) {
+            console.error("Database Error:", err);
+            return res.status(500).json({ error: "Failed to fetch orders" });
+        }
+        res.json(results);
+    });
+});
+
+// Route: /updateorderstatus/101/Delivered
+app.get('/updateorderstatus/:id/:status', (req, res) => {
+    const { id, status } = req.params;
+    const sql = "UPDATE orders SET order_status = ? WHERE order_id = ?";
+
+    db.query(sql, [status, id], (err, result) => {
+        if (err) return res.status(500).json({ error: "Database error" });
+        res.json({ message: "Status updated successfully", newStatus: status });
+    });
+});
 
 
 
