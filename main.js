@@ -171,7 +171,7 @@ app.post("/verifyuser", async (req, res) => {
     })
 });
 
-app.post("/updatepassword", verifyToken, async (req, res) => {
+app.post("/updatepassword", async (req, res) => {
     const { data } = req.body;
 
     const getdata = "SELECT * FROM users WHERE email = ?";
