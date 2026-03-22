@@ -20,9 +20,9 @@ process.on("unhandledRejection", (err) => {
 });
 
 const db = mysql.createPool({
-    host: "localhost",
+    host: "127.0.0.1",
     user: "root",
-    password: "",
+    password: "root",
     database: "trovo",
     waitForConnections: true,
     connectionLimit: 10,
@@ -384,9 +384,6 @@ app.post("/createproduct", upload.single("image"), (req, res) => {
         brand_id,
         status
     } = req.body;
-    console.log(category_id);
-    console.log(brand_id);
-
 
     const image = req.file.filename;
 
@@ -466,7 +463,7 @@ app.get("/getallcustomers", (req, res) => {
 
     const searchVal = `%${search}%`;
 
-    let sql = "SELECT * FROM users WHERE (name LIKE ? OR email LIKE ?)";
+    let sql = "SELECT * FROM users WHERE (name LIKE ? OR email LIKE ?) AND (role != 'admin')";
     let countSql = "SELECT COUNT(*) as total FROM users WHERE (name LIKE ? OR email LIKE ?)";
     const params = [searchVal, searchVal];
 
@@ -739,7 +736,7 @@ app.delete("/deletecategory/:id", (req, res) => {
         const sql = "DELETE FROM categories WHERE category_id = ?";
         db.query(sql, [id], (err, result) => {
             if (err) return res.status(500).json(err);
-            res.json({ message: "Deleted Successfully" });
+            res.json({ message: "Category Deleted Successfully" });
         });
     });
 });
@@ -768,18 +765,19 @@ app.post('/updatecategory', upload.single('category_image'), (req, res) => {
 app.get("/getadmindashboarddata", (req, res) => {
     // Query 1: All Dashboard Stats
     const statsSql = `
-        SELECT 
-            (SELECT COUNT(*) FROM users) as customers,
-            (SELECT COUNT(*) FROM products) as products,
-            (SELECT COUNT(*) FROM users WHERE status = 'active') as activeCustomers,
-            (SELECT COUNT(*) FROM users WHERE status = 'blocked') as blockedCustomers,
-            (SELECT COUNT(*) FROM products WHERE status = 'active') as active,
-            (SELECT COUNT(*) FROM products WHERE status = 'inactive') as inactive,
-            (SELECT COUNT(*) FROM brands) as brands,
-            (SELECT COUNT(*) FROM categories) as categories,
-            (SELECT COUNT(*) FROM orders) as orders,
-            (SELECT IFNULL(SUM(total_amount), 0) FROM orders) as totalRevenue
-    `;
+    SELECT 
+        (SELECT COUNT(*) FROM users) as customers,
+        (SELECT COUNT(*) FROM products) as products,
+        (SELECT COUNT(*) FROM users WHERE status = 'active') as activeCustomers,
+        (SELECT COUNT(*) FROM users WHERE status = 'blocked') as blockedCustomers,
+        (SELECT COUNT(*) FROM products WHERE status = 'active') as active,
+        (SELECT COUNT(*) FROM products WHERE status = 'inactive') as inactive,
+        (SELECT COUNT(*) FROM brands) as brands,
+        (SELECT COUNT(*) FROM categories) as categories,
+        (SELECT COUNT(*) FROM orders) as orders,
+        (SELECT IFNULL(SUM(total_amount), 0) FROM orders) as totalRevenue,
+        (SELECT IFNULL(SUM(total_amount)/NULLIF(COUNT(*),0),0) FROM orders) as avgSale
+`;
 
     // Query 2: Last 5 Transactions
     const transactionsSql = `
@@ -998,6 +996,7 @@ app.post("/addtocart", (req, res) => {
         }
     });
 });
+
 app.post("/removefromcart", (req, res) => {
     const { userid, productid } = req.body;
 
@@ -1232,14 +1231,36 @@ app.get('/updateorderstatus/:id/:status', (req, res) => {
 });
 
 
+// DELETE an order using GET method
+app.get('/deleteorder/:orderId', (req, res) => {
+    const { orderId } = req.params;
 
+    if (!orderId) return res.status(400).json({ error: "Order ID is required" });
 
+    // First, delete order items
+    const deleteItemsSql = "DELETE FROM order_items WHERE order_id = ?";
+    db.query(deleteItemsSql, [orderId], (err1) => {
+        if (err1) {
+            console.error(err1);
+            return res.status(500).json({ error: "Database error while deleting items" });
+        }
 
+        // Then, delete the order itself
+        const deleteOrderSql = "DELETE FROM orders WHERE order_id = ?";
+        db.query(deleteOrderSql, [orderId], (err2, result) => {
+            if (err2) {
+                console.error(err2);
+                return res.status(500).json({ error: "Database error while deleting order" });
+            }
 
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ error: "Order not found" });
+            }
 
-
-
-
+            res.json({ message: "Order deleted successfully" });
+        });
+    });
+});
 
 app.listen(5000, () => {
     console.log(`Server running on http://localhost:5000`);
