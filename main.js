@@ -20,15 +20,26 @@ process.on("unhandledRejection", (err) => {
 });
 
 const db = mysql.createPool({
-    host: "127.0.0.1",
-    user: "root",
-    password: "root",
-    database: "trovo",
+    host: "sql12.freesqldatabase.com",
+    user: "sql12821037",
+    password: "z6sHNwEE2t",
+    database: "sql12821037",
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
     connectTimeout: 10000
 });
+
+// const db = mysql.createPool({
+//     host: "127.0.0.1",
+//     user: "root",
+//     password: "root",
+//     database: "trovo",
+//     waitForConnections: true,
+//     connectionLimit: 10,
+//     queueLimit: 0,
+//     connectTimeout: 10000
+// });
 
 // Log connection once
 db.getConnection((err, connection) => {
@@ -99,7 +110,7 @@ app.post("/createuser", async (req, res) => {
         }
         else {
             const hashedPassword = await bcrypt.hash(data.password, 10);
-
+            
             if (result.length > 0) {
                 return res.send({
                     message: "email already exists"
@@ -803,15 +814,12 @@ app.get("/getadmindashboarddata", (req, res) => {
     });
 });
 
-
-
 app.get("/fewproducts", (req, res) => {
     db.query("SELECT * FROM products ORDER BY product_id DESC LIMIT 4", (err, result) => {
         if (err) return res.status(500).json({ message: "DB error" });
         res.json({ data: result });
     });
 });
-
 
 app.get('/getparticularproduct/:id', (req, res) => {
     const productId = req.params.id; // Extract ID from the URL
@@ -1071,28 +1079,22 @@ app.post('/updatecartquantity', (req, res) => {
 
 
 app.post("/createorder", (req, res) => {
-
     const { user_id } = req.body;
 
     // 1️⃣ Get cart items
     const cartSql = `
-        SELECT c.product_id, c.quantity, p.price
+        SELECT c.product_id, c.quantity, p.price, p.stock
         FROM cart c
         JOIN products p ON c.product_id = p.product_id
         WHERE c.user_id = ?
     `;
 
     db.query(cartSql, [user_id], (err, cartItems) => {
-
         if (err) return res.status(500).json({ message: "DB error" });
-
-        if (cartItems.length === 0) {
-            return res.json({ message: "Cart empty" });
-        }
+        if (cartItems.length === 0) return res.json({ message: "Cart empty" });
 
         // 2️⃣ CALCULATE VALUES
         let subtotal = 0;
-
         cartItems.forEach(item => {
             subtotal += item.price * item.quantity;
         });
@@ -1105,9 +1107,7 @@ app.post("/createorder", (req, res) => {
             INSERT INTO orders (user_id, subtotal, tax, total_amount, order_status)
             VALUES (?, ?, ?, ?, 'Placed')
         `;
-
         db.query(orderSql, [user_id, subtotal, tax, total], (err, result) => {
-
             if (err) return res.status(500).json({ message: "Order error" });
 
             const orderId = result.insertId;
@@ -1117,7 +1117,6 @@ app.post("/createorder", (req, res) => {
                 INSERT INTO order_items (order_id, user_id, product_id, quantity, price)
                 VALUES ?
             `;
-
             const values = cartItems.map(item => [
                 orderId,
                 user_id,
@@ -1127,23 +1126,32 @@ app.post("/createorder", (req, res) => {
             ]);
 
             db.query(itemsSql, [values], (err) => {
-
                 if (err) return res.status(500).json({ message: "Items error" });
 
-                // 5️⃣ CLEAR CART
-                db.query("DELETE FROM cart WHERE user_id = ?", [user_id]);
-
-                res.json({
-                    message: "Order placed successfully",
-                    order_id: orderId
+                // 5️⃣ UPDATE PRODUCT STOCK
+                cartItems.forEach(item => {
+                    const updateStockSql = `
+                        UPDATE products
+                        SET stock = stock - ?
+                        WHERE product_id = ?
+                    `;
+                    db.query(updateStockSql, [item.quantity, item.product_id], (err) => {
+                        if (err) console.error("Stock update error:", err);
+                    });
                 });
 
+                // 6️⃣ CLEAR CART
+                db.query("DELETE FROM cart WHERE user_id = ?", [user_id], (err) => {
+                    if (err) console.error("Cart clear error:", err);
+
+                    res.json({
+                        message: "Order placed successfully",
+                        order_id: orderId
+                    });
+                });
             });
-
         });
-
     });
-
 });
 
 app.get("/getorders/:user_id", (req, res) => {
