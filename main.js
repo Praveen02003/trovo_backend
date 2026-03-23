@@ -4,9 +4,11 @@ import cors from "cors";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import multer from "multer";
+import dotenv from "dotenv";
 
 
 const app = express();
+dotenv.config();
 
 app.use(express.json()); // important
 app.use(cors());
@@ -20,10 +22,11 @@ process.on("unhandledRejection", (err) => {
 });
 
 const db = mysql.createPool({
-    host: "sql12.freesqldatabase.com",
-    user: "sql12821037",
-    password: "z6sHNwEE2t",
-    database: "sql12821037",
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME,
+    port: 3306,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
@@ -110,7 +113,7 @@ app.post("/createuser", async (req, res) => {
         }
         else {
             const hashedPassword = await bcrypt.hash(data.password, 10);
-            
+
             if (result.length > 0) {
                 return res.send({
                     message: "email already exists"
